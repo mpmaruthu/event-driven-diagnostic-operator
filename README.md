@@ -56,7 +56,7 @@ Watcher: The Operator listens to the Kubernetes Event API.
 
 Filter: It ignores everything except Type: Warning.
 
-Parser: It extracts the target Cluster Name (e.g., from ClusterDeployment objects).
+Parser: It extracts the target spoke cluster name (e.g., from ClusterDeployment objects).
 
 Matcher: It checks the error message against internal/config/template.go.
 
