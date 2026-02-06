@@ -1,5 +1,5 @@
-# Kubernetes Automated Diagnostic Operator
-An event-driven kubernetes operator that automatically detects spoke cluster failures, launches the appropriate diagnostic tools (e.g., DU profile operator based must-gather), and offloads logs to external storage for root cause or fault slip through analysis.
+# Open Shift/Kubernetes Automated Event-driven Diagnostic Operator
+An automated event-driven diagnostic operator that automatically detects spoke cluster failures, launches the appropriate diagnostic tools (e.g., DU profile operator based must-gather), and offloads logs to external storage for root cause or fault slip through analysis.
 
 # 🚀 Features
 Event Watcher: Real-time monitoring of Hub Cluster events for Type=Warning.
@@ -48,7 +48,7 @@ kubectl get pods -n diagnostic-system
 
 # ⚙️ Configuration
 
-# 🏗 Architecture & Logic
+# 🏗 High-level Architecture & Logic
 
 Detection Flow
 
@@ -69,6 +69,22 @@ To add new rules, edit internal/config/template.go and rebuild the image:
     Pattern: regexp.MustCompile(`(?i)etcd.*database.*corruption`),
     Image:   "quay.io/openshift/etcd-must-gather:latest",
 },
+
+# Project Directory Structure
+
+event-driven-diagnostic-operator/
+├── cmd/
+│   └── main.go                  # Entrypoint: Initializes the Manager
+├── api/
+│   └── v1alpha1/                # CRD definitions (optional, if you want dynamic config)
+├── internal/
+│   ├── config/
+│   │   └── template.go          # The Data-Driven Image Template
+│   └── controller/
+│       ├── event_watcher.go     # The Reconcile Loop & Parser
+│       └── job_creator.go       # Creates the K8s Job for must-gather
+├── deploy/                      # YAML manifests (RBAC, Deployment)
+└── go.mod
 
 # 🧪 Development & Testing
 
