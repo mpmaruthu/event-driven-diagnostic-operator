@@ -1,5 +1,5 @@
 # Kubernetes Automated Diagnostic Operator
-An event-driven Kubernetes Operator that automatically detects cluster failures, launches the appropriate diagnostic tools (e.g., must-gather), and offloads logs to external storage for analysis.
+An event-driven Kubernetes Operator that automatically detects cluster failures, launches the appropriate diagnostic tools (e.g., must-gather), and offloads logs to external storage for root cause or fault slip through analysis.
 
 # 🚀 Features
 Event Watcher: Real-time monitoring of Hub Cluster events for Type=Warning.
