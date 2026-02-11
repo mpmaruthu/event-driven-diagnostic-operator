@@ -1,4 +1,4 @@
-# Open Shift/Kubernetes Automated Event-driven Diagnostic Operator
+# Open Shift Automated Event-driven Diagnostic Operator
 An automated event-driven diagnostic operator that automatically detects spoke cluster failures, launches the appropriate diagnostic tools (e.g., DU profile operator based must-gather), and offloads logs to external storage for root cause or fault slip through analysis.
 
 # 🚀 Features
