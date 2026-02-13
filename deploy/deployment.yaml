@@ -24,6 +24,13 @@ spec:
         imagePullPolicy: Always
         command:
         - /manager
+        ports:
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        - containerPort: 8082
+          name: query-api
+          protocol: TCP
         resources:
           limits:
             cpu: 500m
@@ -35,3 +42,5 @@ spec:
         env:
         - name: LOG_RETENTION_HOURS
           value: "24"
+        - name: KUBECONFIG
+          value: ""  # Empty string uses in-cluster service account

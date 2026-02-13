@@ -1,0 +1,24 @@
+# This event type is INTENTIONALLY IGNORED by the diagnostic operator
+# Rationale: Connection check failures are typically transient and self-healing
+# For documentation purposes only - do not expect diagnostics to run for this event
+
+apiVersion: v1
+kind: Event
+metadata:
+  name: example-managed-cluster-connection-ignored
+  namespace: target-spoke-cluster-namespace
+type: Warning
+reason: AvailableUnknown
+message: "ManagedCluster target-spoke-cluster is successfully imported. However, the connection check from the managed cluster to the hub cluster has failed"
+involvedObject:
+  apiVersion: cluster.open-cluster-management.io/v1
+  kind: ManagedCluster
+  name: target-spoke-cluster
+  namespace: target-spoke-cluster-namespace
+firstTimestamp: "2026-02-13T17:00:00Z"
+lastTimestamp: "2026-02-13T17:23:00Z"
+count: 1
+source:
+  component: managed-cluster-health
+reportingComponent: cluster-manager
+reportingInstance: cluster-manager-xyz

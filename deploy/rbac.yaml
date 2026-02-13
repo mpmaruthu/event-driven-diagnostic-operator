@@ -1,8 +1,43 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: diagnostic-operator-sa
+  namespace: diagnostic-operator-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
   name: diagnostic-job-sa
   namespace: diagnostic-operator-system
+---
+# ClusterRole for the operator to watch Events cluster-wide
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: diagnostic-operator-role
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: diagnostic-operator-binding
+subjects:
+- kind: ServiceAccount
+  name: diagnostic-operator-sa
+  namespace: diagnostic-operator-system
+roleRef:
+  kind: ClusterRole
+  name: diagnostic-operator-role
+  apiGroup: rbac.authorization.k8s.io
 ---
 # The Job only needs to be able to use the SecurityContextConstraints (SCC) 
 # required to mount NFS (privileged/hostmount usually requires explicit access in OpenShift).
