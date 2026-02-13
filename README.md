@@ -1353,4 +1353,3 @@ limitations under the License.
 
 ---
 
-**Made with ❤️ for the OpenShift community**
