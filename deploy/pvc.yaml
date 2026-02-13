@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logs-pvc
+  namespace: diagnostic-operator-system
+spec:
+  accessModes:
+    - ReadWriteMany # Critical: Allows multiple diagnostic jobs to write simultaneously
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: managed-nfs-storage # Replace with your cluster's NFS storage class
