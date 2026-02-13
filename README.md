@@ -329,8 +329,8 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 
 1. **Clone the repository**:
 ```bash
-git clone https://github.com/your-org/event-driven-k8s-operator.git
-cd event-driven-k8s-operator
+git clone https://github.com/your-org/event-driven-diagnostic-operator.git
+cd event-driven-diagnostic-operator
 ```
 
 2. **Build the container image**:
@@ -966,7 +966,7 @@ oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-oper
 ### Project Structure
 
 ```
-event-driven-k8s-operator/
+event-driven-diagnostic-operator/
 ├── cmd/
 │   └── main.go                       # Entrypoint: Initializes controller-runtime Manager
 ├── internal/
