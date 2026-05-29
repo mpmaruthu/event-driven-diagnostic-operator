@@ -23,6 +23,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
 
 WORKDIR /
+
+# Install kubectl for manual event queries
+RUN microdnf install -y curl && \
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin/ && \
+    microdnf clean all
+
 COPY --from=builder /workspace/manager .
 USER 65532:65532
 

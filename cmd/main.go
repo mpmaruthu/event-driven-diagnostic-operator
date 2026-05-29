@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"net/http"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -78,6 +79,22 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+
+	// Setup HTTP endpoint for manual event queries
+	queryHandler := &controller.QueryHandler{
+		KubeconfigPath: os.Getenv("KUBECONFIG"),
+	}
+
+	http.HandleFunc("/query-events", queryHandler.HandleEventQuery)
+	http.HandleFunc("/query-events-all", queryHandler.HandleAllNamespacesQuery)
+
+	// Start query API server in background
+	go func() {
+		setupLog.Info("Starting query API server on :8082")
+		if err := http.ListenAndServe(":8082", nil); err != nil {
+			setupLog.Error(err, "Query API server failed")
+		}
+	}()
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

@@ -2,8 +2,9 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"strings"
-    
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -13,6 +14,11 @@ import (
 
 	"diagnostic-operator/internal/config"
 )
+
+var clusterNamePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:ClusterDeployment|ManagedCluster|cluster)\s+(\S+)`),
+	regexp.MustCompile(`(?i)on\s+(?:cluster\s+)?(\S+)`),
+}
 
 // EventReconciler watches for specific Warning events
 type EventReconciler struct {
@@ -45,17 +51,14 @@ func (r *EventReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	message := k8sEvent.Message
-
 	// [Step 3: Output Parser]
-	// Extract Spoke Cluster Name (e.g., from "ClusterDeployment cluster-1 failed...")
-	spokeClusterName := r.parseClusterName(message)
+	spokeClusterName := r.parseClusterName(&k8sEvent)
 	if spokeClusterName == "" {
 		return ctrl.Result{}, nil // Not a cluster-related event
 	}
 
 	// [Step 4: Image Name Extractor]
-	image := r.determineImage(message)
+	image := r.determineImage(k8sEvent.Message)
 
 	// [Step 5, 6, 7]: Offload to the Job Creator
 	// We do NOT run must-gather here (blocking). We spawn a K8s Job.
@@ -67,15 +70,31 @@ func (r *EventReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
-func (r *EventReconciler) parseClusterName(msg string) string {
-	// Simple string parsing or regex to extract cluster name
-	// In reality, this would be robust regex
-	if strings.Contains(msg, "ClusterDeployment") {
-		parts := strings.Fields(msg)
-		if len(parts) > 1 {
-			return parts[1] // Mock logic
+// parseClusterName extracts the spoke cluster name using multiple strategies:
+//   - InvolvedObject metadata (most reliable)
+//   - Namespace heuristic (spoke-* naming convention)
+//   - Regex patterns on the event message (broadest coverage)
+func (r *EventReconciler) parseClusterName(evt *corev1.Event) string {
+	// Strategy A: InvolvedObject carries the cluster identity directly.
+	kind := evt.InvolvedObject.Kind
+	if kind == "ClusterDeployment" || kind == "ManagedCluster" {
+		if name := evt.InvolvedObject.Name; name != "" {
+			return name
 		}
 	}
+
+	// Strategy B: Namespace often mirrors the spoke cluster name.
+	if ns := evt.Namespace; strings.HasPrefix(ns, "spoke-") {
+		return ns
+	}
+
+	// Strategy C: Regex extraction from the free-text message.
+	for _, re := range clusterNamePatterns {
+		if matches := re.FindStringSubmatch(evt.Message); len(matches) > 1 {
+			return matches[1]
+		}
+	}
+
 	return ""
 }
 

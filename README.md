@@ -171,8 +171,8 @@ The operator loads diagnostic rules from `internal/config/template.go` at startu
 **Code reference**: `LoadTemplates()` function in `config/template.go`
 
 **Example rules**:
-- ETCD corruption pattern → `quay.io/openshift/etcd-must-gather:latest`
-- Network CNI failure pattern → `quay.io/openshift/network-must-gather:latest`
+- ETCD corruption pattern → `registry/openshift/etcd-must-gather:latest`
+- Network CNI failure pattern → `registry/openshift/network-must-gather:latest`
 - Default fallback → `registry.redhat.io/openshift4/ose-must-gather:latest`
 
 #### Step 2: Export Hub Cluster's KUBECONFIG
@@ -329,22 +329,22 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 
 1. **Clone the repository**:
 ```bash
-git clone https://github.com/your-org/event-driven-diagnostic-operator.git
+git clone https://github.com/username/event-driven-diagnostic-operator.git
 cd event-driven-diagnostic-operator
 ```
 
 2. **Build the container image**:
 ```bash
 # Using Podman
-podman build -t quay.io/your-org/diagnostic-operator:v1.0.0 -f Containerfile .
+podman build -t registry/username/diagnostic-operator:v1.0.0 -f Containerfile .
 
 # Or using Docker
-docker build -t quay.io/your-org/diagnostic-operator:v1.0.0 -f Containerfile .
+docker build -t registry/username/diagnostic-operator:v1.0.0 -f Containerfile .
 ```
 
 3. **Push to your container registry**:
 ```bash
-podman push quay.io/your-org/diagnostic-operator:v1.0.0
+podman push registry/username/diagnostic-operator:v1.0.0
 ```
 
 ### Deploying with Kubernetes Manifests
@@ -388,7 +388,7 @@ spec:
     spec:
       containers:
       - name: manager
-        image: quay.io/your-org/diagnostic-operator:v1.0.0  # Update this
+        image: registry/username/diagnostic-operator:v1.0.0  # Update this
 ```
 
 Then apply:
@@ -493,11 +493,40 @@ Diagnostic rules are defined in `internal/config/template.go`. Each rule maps an
 
 | Rule Name | Pattern | Must-Gather Image |
 |-----------|---------|-------------------|
-| ETCD Corruption | `(?i)etcd.*database.*corruption` | `quay.io/openshift/etcd-must-gather:latest` |
-| OVN Network Failure | `(?i)Network.*CNI.*failed` | `quay.io/openshift/network-must-gather:latest` |
+| ETCD Corruption | `(?i)etcd.*database.*corruption` | `registry/openshift/etcd-must-gather:latest` |
+| OVN Network Failure | `(?i)Network.*CNI.*failed` | `registry/openshift/network-must-gather:latest` |
 | Default (fallback) | `.*` (matches all) | `registry.redhat.io/openshift4/ose-must-gather:latest` |
 
 **Pattern matching is case-insensitive** (`(?i)` flag) and uses Go's `regexp` package.
+
+### Ignored Warning Events
+
+The operator intentionally ignores certain Warning event patterns to avoid unnecessary diagnostic overhead:
+
+**Managed Cluster Connection Check Failures**
+
+- **Pattern**: `connection check from the managed cluster to the hub cluster.*failed`
+- **Reason**: `AvailableUnknown`
+- **Object Type**: `ManagedCluster`
+- **Rationale**: These events are typically transient and self-healing. RHACM continuously retries connection checks, and running diagnostics on every connection blip would create unnecessary cluster load. Connection issues are best diagnosed through network policy reviews, firewall rules, and DNS configuration rather than cluster-wide must-gather data collection.
+
+**Example of ignored event**:
+
+```yaml
+# This event will NOT trigger diagnostics
+apiVersion: v1
+kind: Event
+type: Warning
+reason: AvailableUnknown
+message: "ManagedCluster target-spoke-cluster is successfully imported. However, the connection check from the managed cluster to the hub cluster has failed"
+involvedObject:
+  kind: ManagedCluster
+  name: target-spoke-cluster
+```
+
+See `examples/ignored-managed-cluster-connection-event.yaml` for a complete example.
+
+**Note**: If you need to diagnose persistent connection issues, manually trigger a network must-gather on the affected spoke cluster using the targeted diagnostic approach rather than relying on automatic event-driven diagnostics.
 
 ### Adding Custom Rules
 
@@ -511,18 +540,18 @@ func LoadTemplates() []DiagnosticRule {
         {
             Name:    "ETCD Corruption",
             Pattern: regexp.MustCompile(`(?i)etcd.*database.*corruption`),
-            Image:   "quay.io/openshift/etcd-must-gather:latest",
+            Image:   "registry/openshift/etcd-must-gather:latest",
         },
         {
             Name:    "OVN Network Failure",
             Pattern: regexp.MustCompile(`(?i)Network.*CNI.*failed`),
-            Image:   "quay.io/openshift/network-must-gather:latest",
+            Image:   "registry/openshift/network-must-gather:latest",
         },
         // ADD YOUR NEW RULE HERE
         {
             Name:    "Storage Provisioning Failure",
             Pattern: regexp.MustCompile(`(?i)StorageClass.*provision.*failed`),
-            Image:   "quay.io/openshift/storage-must-gather:latest",
+            Image:   "registry/openshift/storage-must-gather:latest",
         },
         // Fallback default - keep this last
         {
@@ -536,14 +565,14 @@ func LoadTemplates() []DiagnosticRule {
 
 2. **Rebuild** the operator image:
 ```bash
-podman build -t quay.io/your-org/diagnostic-operator:v1.0.1 -f Containerfile .
-podman push quay.io/your-org/diagnostic-operator:v1.0.1
+podman build -t registry/username/diagnostic-operator:v1.0.1 -f Containerfile .
+podman push registry/username/diagnostic-operator:v1.0.1
 ```
 
 3. **Update** the deployment:
 ```bash
 kubectl set image deployment/diagnostic-operator \
-  manager=quay.io/your-org/diagnostic-operator:v1.0.1 \
+  manager=registry/username/diagnostic-operator:v1.0.1 \
   -n diagnostic-operator-system
 ```
 
@@ -581,7 +610,7 @@ kubectl apply -f test-etcd-event.yaml
 1. Operator detects the Warning event
 2. Extracts cluster name: `spoke-prod-1`
 3. Matches pattern: `(?i)etcd.*database.*corruption`
-4. Creates Job using image: `quay.io/openshift/etcd-must-gather:latest`
+4. Creates Job using image: `registry/openshift/etcd-must-gather:latest`
 5. Job writes logs to: `/mnt/nfs/logs/spoke-prod-1/`
 
 Verify the job was created:
@@ -753,6 +782,121 @@ kubectl logs -n diagnostic-operator-system deployment/diagnostic-operator -f
 Log levels can be adjusted with zap flags:
 - Development mode: `--zap-devel=true` (verbose, includes stack traces)
 - Production mode: `--zap-devel=false` (structured JSON logs)
+
+### Manual Event Queries
+
+While the operator automatically watches for Warning events, you can also manually query events using kubectl commands or the operator's query API.
+
+#### Using kubectl Commands
+
+**Query Warning events in a specific spoke/managed cluster namespace**:
+
+```bash
+# Using hub cluster kubeconfig
+export KUBECONFIG=/path/to/hub-cluster-kubeconfig
+
+# Query Warning events in a spoke cluster namespace
+kubectl get events -n target-spoke-cluster --field-selector type=Warning
+
+# Get detailed output with timestamps
+kubectl get events -n target-spoke-cluster --field-selector type=Warning -o wide
+
+# Get JSON output for programmatic parsing
+kubectl get events -n target-spoke-cluster --field-selector type=Warning -o json
+```
+
+**Query Warning events across all namespaces**:
+
+```bash
+# See all Warning events on the hub cluster
+kubectl get events --all-namespaces --field-selector type=Warning
+
+# Filter for managed cluster related events
+kubectl get events --all-namespaces --field-selector type=Warning | grep ManagedCluster
+
+# Sort by last seen timestamp
+kubectl get events --all-namespaces --field-selector type=Warning --sort-by='.lastTimestamp'
+```
+
+#### Using the Operator's Query API
+
+The operator exposes HTTP endpoints on port 8082 for programmatic event queries:
+
+**Query events in a specific namespace**:
+
+```bash
+# Port-forward to access the API
+kubectl port-forward -n diagnostic-operator-system deployment/diagnostic-operator 8082:8082
+
+# Query events in a specific namespace
+curl http://localhost:8082/query-events?namespace=target-spoke-cluster
+
+# Query all namespaces
+curl http://localhost:8082/query-events-all
+```
+
+**From inside a pod in the cluster**:
+
+```bash
+kubectl exec -n diagnostic-operator-system deployment/diagnostic-operator -- \
+  curl http://localhost:8082/query-events?namespace=target-spoke-cluster
+```
+
+#### Common Event Query Patterns
+
+```bash
+# Check for connection failures (ignored by operator)
+kubectl get events -n target-spoke-cluster \
+  --field-selector type=Warning,reason=AvailableUnknown
+
+# Check for ETCD related warnings
+kubectl get events --all-namespaces \
+  --field-selector type=Warning \
+  -o json | jq '.items[] | select(.message | contains("etcd"))'
+
+# Check for managed cluster events
+kubectl get events --all-namespaces \
+  --field-selector type=Warning,involvedObject.kind=ManagedCluster
+
+# Get events from the last hour
+kubectl get events --all-namespaces \
+  --field-selector type=Warning \
+  --sort-by='.lastTimestamp' | tail -20
+```
+
+#### Understanding Event Output
+
+```
+LAST SEEN   TYPE      REASON             OBJECT                      MESSAGE
+23m         Warning   AvailableUnknown   managedcluster/cluster-1    The cluster-1 is successfully...
+```
+
+- **LAST SEEN**: How long ago the event was last observed
+- **TYPE**: Event severity (Warning, Normal, Error)
+- **REASON**: Short machine-readable reason code
+- **OBJECT**: Kubernetes object that triggered the event
+- **MESSAGE**: Human-readable description
+
+#### Query API Response Format
+
+```json
+{
+  "namespace": "target-spoke-cluster",
+  "count": 2,
+  "events": [
+    {
+      "Namespace": "target-spoke-cluster",
+      "Name": "example-event.abc123",
+      "Type": "Warning",
+      "Reason": "AvailableUnknown",
+      "Message": "Connection check failed",
+      "LastSeen": "2026-02-13T17:23:00Z",
+      "ObjectKind": "ManagedCluster",
+      "ObjectName": "target-spoke-cluster"
+    }
+  ]
+}
+```
 
 ---
 
@@ -1047,9 +1191,9 @@ Pattern: regexp.MustCompile(`(?i)keyword1.*keyword2.*specific-error`),
 
 3. **Find appropriate must-gather image**: Check available must-gather images:
 - General: `registry.redhat.io/openshift4/ose-must-gather:latest`
-- ETCD: `quay.io/openshift/etcd-must-gather:latest`
-- Network: `quay.io/openshift/network-must-gather:latest`
-- Storage: `quay.io/openshift/storage-must-gather:latest`
+- ETCD: `registry/openshift/etcd-must-gather:latest`
+- Network: `registry/openshift/network-must-gather:latest`
+- Storage: `registry/openshift/storage-must-gather:latest`
 - Custom: Build your own must-gather image
 
 4. **Add rule to template.go**:
@@ -1057,7 +1201,7 @@ Pattern: regexp.MustCompile(`(?i)keyword1.*keyword2.*specific-error`),
 {
     Name:    "Your Error Type",
     Pattern: regexp.MustCompile(`(?i)your.*regex.*pattern`),
-    Image:   "quay.io/your-org/your-must-gather:latest",
+    Image:   "registry/username/your-must-gather:latest",
 },
 ```
 
@@ -1079,9 +1223,9 @@ func TestPatternMatching(t *testing.T) {
 
 6. **Rebuild and deploy**:
 ```bash
-podman build -t quay.io/your-org/diagnostic-operator:v1.1.0 -f Containerfile .
-podman push quay.io/your-org/diagnostic-operator:v1.1.0
-kubectl set image deployment/diagnostic-operator manager=quay.io/your-org/diagnostic-operator:v1.1.0 -n diagnostic-operator-system
+podman build -t registry/username/diagnostic-operator:v1.1.0 -f Containerfile .
+podman push registry/username/diagnostic-operator:v1.1.0
+kubectl set image deployment/diagnostic-operator manager=registry/username/diagnostic-operator:v1.1.0 -n diagnostic-operator-system
 ```
 
 ### Debugging Tips
@@ -1238,7 +1382,7 @@ oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnosti
 
 ```bash
 # Scan image with Trivy
-trivy image quay.io/your-org/diagnostic-operator:v1.0.0
+trivy image registry/username/diagnostic-operator:v1.0.0
 ```
 
 ---
@@ -1347,8 +1491,8 @@ limitations under the License.
 
 ## Support & Community
 
-- **Issues**: [GitHub Issues](https://github.com/your-org/event-driven-diagnostic-operator/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/event-driven-diagnostic-operator/discussions)
+- **Issues**: [GitHub Issues](https://github.com/username/event-driven-diagnostic-operator/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/username/event-driven-diagnostic-operator/discussions)
 - **Email**: pmohanra@redhat.com
 
 ---
