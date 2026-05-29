@@ -20,10 +20,13 @@ spec:
         runAsNonRoot: true
       containers:
       - name: manager
-        image: quay.io/your-org/diagnostic-operator:v1 # The image you built above
+        image: image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
         imagePullPolicy: Always
         command:
         - /manager
+        - --leader-elect=true
+        - --zap-devel=false
+        - --zap-encoder=json  
         ports:
         - containerPort: 8081
           name: health

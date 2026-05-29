@@ -18,18 +18,12 @@ func LoadTemplates() []DiagnosticRule {
 		{
 			Name:    "ETCD Corruption",
 			Pattern: regexp.MustCompile(`(?i)etcd.*database.*corruption`),
-			Image:   "quay.io/openshift/etcd-must-gather:latest",
+			Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
 		},
 		{
 			Name:    "OVN Network Failure",
 			Pattern: regexp.MustCompile(`(?i)Network.*CNI.*failed`),
-			Image:   "quay.io/openshift/network-must-gather:latest",
-		},
-		// Fallback default
-		{
-			Name:    "Default",
-			Pattern: regexp.MustCompile(`.*`),
-			Image:   "", // Empty string implies default OC image
+			Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
 		},
 	}
 }

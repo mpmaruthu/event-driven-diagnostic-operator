@@ -46,22 +46,32 @@ func (r *EventReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile is the main logic loop
 func (r *EventReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	var k8sEvent corev1.Event
 	if err := r.Get(ctx, req.NamespacedName, &k8sEvent); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// [Step 4: Image Name Extractor] -- check FIRST so we skip events
+	// that don't match any specific diagnostic rule.
+	image := r.determineImage(k8sEvent.Message)
+	if image == "" {
+		return ctrl.Result{}, nil
+	}
+
 	// [Step 3: Output Parser]
 	spokeClusterName := r.parseClusterName(&k8sEvent)
 	if spokeClusterName == "" {
-		return ctrl.Result{}, nil // Not a cluster-related event
+		return ctrl.Result{}, nil
 	}
 
-	// [Step 4: Image Name Extractor]
-	image := r.determineImage(k8sEvent.Message)
+	log.Info("Matched diagnostic rule",
+		"cluster", spokeClusterName,
+		"reason", k8sEvent.Reason,
+		"image", image)
 
 	// [Step 5, 6, 7]: Offload to the Job Creator
-	// We do NOT run must-gather here (blocking). We spawn a K8s Job.
 	err := r.CreateDiagnosticJob(ctx, spokeClusterName, image)
 	if err != nil {
 		return ctrl.Result{}, err

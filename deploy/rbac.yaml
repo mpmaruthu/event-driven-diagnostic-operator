@@ -18,10 +18,10 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["events"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list", "watch", "create", "patch"]
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get", "list"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "get", "list", "watch", "delete"]
@@ -37,6 +37,56 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: diagnostic-operator-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role for leader election (leases are namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: diagnostic-operator-leader-election
+  namespace: diagnostic-operator-system
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: diagnostic-operator-leader-election-binding
+  namespace: diagnostic-operator-system
+subjects:
+- kind: ServiceAccount
+  name: diagnostic-operator-sa
+  namespace: diagnostic-operator-system
+roleRef:
+  kind: Role
+  name: diagnostic-operator-leader-election
+  apiGroup: rbac.authorization.k8s.io
+---
+# Allow the operator to create/delete copied kubeconfig secrets in its own namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: diagnostic-operator-secrets
+  namespace: diagnostic-operator-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: diagnostic-operator-secrets-binding
+  namespace: diagnostic-operator-system
+subjects:
+- kind: ServiceAccount
+  name: diagnostic-operator-sa
+  namespace: diagnostic-operator-system
+roleRef:
+  kind: Role
+  name: diagnostic-operator-secrets
   apiGroup: rbac.authorization.k8s.io
 ---
 # The Job only needs to be able to use the SecurityContextConstraints (SCC) 
