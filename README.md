@@ -34,6 +34,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
   - [Project Structure](#project-structure)
+  - [Running Tests](#running-tests)
   - [Running Locally](#running-locally)
   - [Adding New Diagnostic Rules](#adding-new-diagnostic-rules)
 - [Security Considerations](#security-considerations)
@@ -48,9 +49,9 @@ The **OpenShift Event-Driven Diagnostic Operator** automates the detection and d
 
 1. **Loads** pre-defined diagnostic templates mapping error patterns to must-gather images
 2. **Monitors** Hub Cluster (OpenShift with RHACM) events using hub kubeconfig for `Type=Warning` events
-3. **Parses** event output to extract spoke/managed cluster name and error details
-4. **Extracts** appropriate must-gather image name using data-driven template matching
-5. **Retrieves** spoke/managed cluster kubeconfig from Kubernetes Secrets
+3. **Matches** event messages against regex patterns to select the appropriate must-gather image (events that match no rule are silently skipped)
+4. **Parses** event metadata and message to extract spoke/managed cluster name using a multi-strategy parser
+5. **Copies** spoke/managed cluster kubeconfig from the spoke namespace into the operator namespace
 6. **Spawns** lightweight Kubernetes Jobs with the matched must-gather image
 7. **Executes** diagnostics on spoke cluster using mounted kubeconfig
 8. **Persists** diagnostic logs to external NFS or SDS (Software Defined Storage) nodes via RWX PVC
@@ -76,19 +77,19 @@ flowchart TB
     
     HubKubeconfig[Export Hub Cluster KUBECONFIG]
     EventReceiver[Cluster events receiver<br/>types=Warning]
-    OutputParser[Cluster events receiver<br/>output parser]
     ImageExtractor[Data-driven image name extractor]
-    SpokeKubeconfig[Export Spoke/Managed Cluster KUBECONFIG]
+    OutputParser[Cluster name parser<br/>multi-strategy extraction]
+    CopySecret[Copy spoke kubeconfig secret<br/>to operator namespace]
     MustGather[Run must-gather<br/>with specific image or without]
     StoreLog[Store system logs to<br/>external NFS or SDS nodes]
     GarbageCollector[System log garbage collector]
     
     Template --> ImageExtractor
     HubKubeconfig --> EventReceiver
-    EventReceiver --> OutputParser
-    OutputParser --> ImageExtractor
-    ImageExtractor --> SpokeKubeconfig
-    SpokeKubeconfig --> MustGather
+    EventReceiver --> ImageExtractor
+    ImageExtractor --> OutputParser
+    OutputParser --> CopySecret
+    CopySecret --> MustGather
     MustGather --> StoreLog
     StoreLog --> GarbageCollector
 ```
@@ -103,8 +104,9 @@ graph TB
     
     subgraph operator [Diagnostic Operator Pod]
         EventReconciler[Event Reconciler<br/>Watches Warning Events]
-        OutputParser[Output Parser<br/>Extracts cluster name]
         ImageExtractor[Image Name Extractor<br/>Matches patterns to images]
+        ClusterParser[Cluster Name Parser<br/>Multi-strategy extraction]
+        SecretCopier[Secret Copier<br/>Copies kubeconfig to operator NS]
         JobCreator[Job Creator<br/>Spawns Diagnostic Jobs]
     end
     
@@ -115,7 +117,7 @@ graph TB
     end
     
     subgraph spokeCluster [Spoke/Managed Clusters]
-        SpokeKubeconfig[Spoke Cluster Kubeconfig Secrets<br/>cluster-name-admin-kubeconfig]
+        SpokeKubeconfig["Spoke Cluster Kubeconfig Secrets<br/>{cluster-name}-admin-kubeconfig in spoke NS"]
     end
     
     subgraph storage [Persistent Storage]
@@ -124,12 +126,13 @@ graph TB
     
     HubKubeconfig --> EventReconciler
     Events --> EventReconciler
-    EventReconciler --> OutputParser
-    OutputParser --> ImageExtractor
+    EventReconciler --> ImageExtractor
     Template --> ImageExtractor
-    ImageExtractor --> JobCreator
+    ImageExtractor --> ClusterParser
+    ClusterParser --> SecretCopier
+    SpokeKubeconfig --> SecretCopier
+    SecretCopier --> JobCreator
     JobCreator --> Jobs
-    SpokeKubeconfig --> Jobs
     Jobs --> StorageNodes
     StorageNodes --> GC[TTL Garbage Collector]
 ```
@@ -143,14 +146,14 @@ flowchart TB
     step1[Step 1: Pre-defined data collection template<br/>Loaded at operator startup]
     step2[Step 2: Export Hub Cluster KUBECONFIG<br/>In-cluster service account]
     step3[Step 3: Cluster events receiver<br/>Filter: types=Warning]
-    step4[Step 4: Output parser<br/>Extract cluster name and error]
-    step5[Step 5: Data-driven image name extractor<br/>Match pattern to must-gather image]
-    step6[Step 6: Export Spoke Cluster KUBECONFIG<br/>Retrieve from Secret]
+    step4[Step 4: Data-driven image name extractor<br/>Match pattern to must-gather image]
+    step5[Step 5: Output parser<br/>Extract cluster name via multi-strategy parser]
+    step6[Step 6: Export Spoke Cluster KUBECONFIG<br/>Copy secret to operator namespace]
     step7[Step 7: Run must-gather<br/>With specific or default image]
     step8[Step 8: Store logs to NFS/SDS<br/>Persistent RWX storage]
     step9[Step 9: Garbage collector<br/>TTL-based cleanup]
     
-    step1 --> step5
+    step1 --> step4
     step2 --> step3
     step3 --> step4
     step4 --> step5
@@ -170,10 +173,10 @@ The operator loads diagnostic rules from `internal/config/template.go` at startu
 
 **Code reference**: `LoadTemplates()` function in `config/template.go`
 
-**Example rules**:
-- ETCD corruption pattern → `registry/openshift/etcd-must-gather:latest`
-- Network CNI failure pattern → `registry/openshift/network-must-gather:latest`
-- Default fallback → `registry.redhat.io/openshift4/ose-must-gather:latest`
+**Current rules**:
+- ETCD corruption pattern → `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
+- Network CNI failure pattern → `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
+- Default fallback (safety net in `CreateDiagnosticJob()`) → `registry.redhat.io/openshift4/ose-must-gather:latest`
 
 #### Step 2: Export Hub Cluster's KUBECONFIG
 
@@ -181,13 +184,13 @@ The operator runs within the Hub Cluster (OpenShift with RHACM - Red Hat Advance
 
 **Configuration**: In-cluster service account with permissions to watch Events cluster-wide
 
-**Code reference**: `cmd/main.go` (line 47) - `ctrl.GetConfigOrDie()`
+**Code reference**: `ctrl.GetConfigOrDie()` in `cmd/main.go`
 
 #### Step 3: Cluster Events Receiver (types=Warning)
 
 The `EventReconciler` (in `internal/controller/event_watcher.go`) watches Kubernetes Event objects and filters only events where `Type == "Warning"`.
 
-**Code reference**: `SetupWithManager()` function in `event_watcher.go` (lines 24-39)
+**Code reference**: `SetupWithManager()` function in `event_watcher.go`
 
 **Filtering logic**:
 ```go
@@ -197,30 +200,16 @@ CreateFunc: func(e event.CreateEvent) bool {
 }
 ```
 
-#### Step 4: Cluster Events Receiver Output Parser
+#### Step 4: Data-driven Image Name Extractor
 
-When a Warning event is detected, the output parser extracts critical information from the event message, specifically:
-- **Spoke/managed cluster name** (e.g., from "ClusterDeployment spoke-prod-1 failed...")
-- **Error description** for pattern matching
-
-**Code reference**: `parseClusterName()` function in `event_watcher.go` (lines 70-79)
-
-**Example parsing**:
-```
-Input:  "ClusterDeployment spoke-prod-1 etcd database corruption detected"
-Output: cluster name = "spoke-prod-1"
-        error msg = "etcd database corruption detected"
-```
-
-#### Step 5: Data-driven Image Name Extractor
+**Note**: In the actual implementation, image matching runs **before** cluster name parsing. If the event message does not match any diagnostic rule, the event is silently skipped without attempting to parse a cluster name. This avoids unnecessary work for irrelevant Warning events.
 
 Using the pre-defined template (Step 1), the extractor matches the error message against regex patterns to determine which must-gather image to use:
-- ETCD errors → `etcd-must-gather`
-- Network errors → `network-must-gather`
-- Storage errors → `storage-must-gather`
-- Default → generic `must-gather`
+- ETCD errors → matched must-gather image
+- Network errors → matched must-gather image
+- Unmatched events → skipped (empty string returned)
 
-**Code reference**: `determineImage()` function in `event_watcher.go` (lines 82-88)
+**Code reference**: `determineImage()` function in `event_watcher.go`
 
 **Matching logic**:
 ```go
@@ -229,34 +218,74 @@ for _, rule := range r.Rules {
         return rule.Image
     }
 }
+return "" // No match — event will be skipped
+```
+
+#### Step 5: Cluster Events Receiver Output Parser
+
+After a diagnostic rule matches, the output parser extracts the spoke/managed cluster name using a **three-strategy priority parser**:
+
+| Priority | Strategy | Source | Example |
+|----------|----------|--------|---------|
+| 1 (highest) | **Strategy A** | `InvolvedObject.Kind` is `ClusterDeployment` or `ManagedCluster` | Uses `InvolvedObject.Name` directly |
+| 2 | **Strategy B** | Event namespace has `spoke-` prefix | Uses namespace as cluster name (e.g., `spoke-prod-1`) |
+| 3 (lowest) | **Strategy C** | Regex patterns on message text | Matches `ClusterDeployment <name>`, `ManagedCluster <name>`, `cluster <name>`, `on <name>` |
+
+If none of the strategies produce a cluster name, the event is skipped.
+
+**Code reference**: `parseClusterName()` function in `event_watcher.go`
+
+**Example parsing**:
+```
+Strategy A: Event with InvolvedObject Kind=ClusterDeployment, Name=spoke-prod-1
+            → cluster name = "spoke-prod-1"
+
+Strategy B: Event in namespace "spoke-dev-2" (no ClusterDeployment/ManagedCluster kind)
+            → cluster name = "spoke-dev-2"
+
+Strategy C: Message "etcd database corruption detected on cluster spoke-prod-1"
+            → cluster name = "spoke-prod-1"
 ```
 
 #### Step 6: Export Spoke/Managed Cluster's KUBECONFIG
 
-The operator retrieves the spoke cluster's kubeconfig from a Kubernetes Secret named `{cluster-name}-admin-kubeconfig`. This kubeconfig is mounted into the diagnostic Job pod to provide access to the target spoke cluster.
+The operator retrieves the spoke cluster's kubeconfig from a Kubernetes Secret and copies it into the operator namespace. Kubernetes does not support cross-namespace volume mounts, so this copy step is required for the diagnostic Job pod to mount the kubeconfig.
 
-**Code reference**: `job_creator.go` (lines 40-45)
+**Code reference**: `copySecretToNamespace()` function in `job_creator.go`
 
-**Secret format**:
+**Secret flow**:
+1. **Source secret**: `{cluster-name}-admin-kubeconfig` in namespace `{cluster-name}` (the spoke cluster's own namespace on the hub)
+2. **Copy**: The operator creates an idempotent copy named `diag-kubeconfig-{cluster-name}` in `diagnostic-operator-system`
+3. **Mount**: The diagnostic Job pod mounts the copied secret
+
+**Source secret format**:
 - Name: `{cluster-name}-admin-kubeconfig` (e.g., `spoke-prod-1-admin-kubeconfig`)
-- Namespace: `diagnostic-operator-system`
+- Namespace: `{cluster-name}` (e.g., `spoke-prod-1`)
 - Key: `kubeconfig`
+
+**Copied secret format**:
+- Name: `diag-kubeconfig-{cluster-name}` (e.g., `diag-kubeconfig-spoke-prod-1`)
+- Namespace: `diagnostic-operator-system`
+- Labels: `app.kubernetes.io/managed-by: diagnostic-operator`, `diagnostic-operator/cluster: {cluster-name}`
 
 #### Step 7: Run must-gather with Specific Image or Without
 
 A Kubernetes Job is created that:
-- Uses the image determined in Step 5
+- Uses the image determined in Step 4
 - Mounts the spoke cluster kubeconfig from Step 6
 - Runs `oc adm must-gather` command against the spoke cluster
 - Operates independently without blocking the operator
 - Has TTL set for automatic cleanup
 
-**Code reference**: `CreateDiagnosticJob()` in `job_creator.go` (lines 14-91)
+**Code reference**: `CreateDiagnosticJob()` function in `job_creator.go`
 
 **Job specifications**:
+- Name prefix: `diag-{cluster-name}-` (generated via `GenerateName`)
+- Container name: `must-gather-executor`
 - ServiceAccount: `diagnostic-job-sa`
 - RestartPolicy: `OnFailure`
-- Command: `["adm", "must-gather", "--dest-dir=/mnt/nfs/logs/{cluster-name}"]`
+- Command: `["/usr/bin/oc"]`
+- Args: `["adm", "must-gather", "--dest-dir=/mnt/nfs/logs/{cluster-name}"]`
 - Environment: `KUBECONFIG=/etc/secret/kubeconfig`
 
 #### Step 8: Store System Logs to External NFS or SDS Nodes
@@ -267,7 +296,7 @@ The Job pod mounts a ReadWriteMany (RWX) PersistentVolumeClaim backed by either:
 
 Logs are written to `/mnt/nfs/logs/{cluster-name}/` ensuring persistence beyond pod lifetime and accessibility for offline root cause analysis.
 
-**Code reference**: `job_creator.go` (lines 47-55 for PVC definition, lines 77-80 for mount)
+**Code reference**: PVC volume and volume mount definitions in `CreateDiagnosticJob()` in `job_creator.go`
 
 **Storage configuration**:
 - PVC name: `logs-pvc`
@@ -279,7 +308,7 @@ Logs are written to `/mnt/nfs/logs/{cluster-name}/` ensuring persistence beyond 
 
 After the diagnostic Job completes (successfully or with failure), the Kubernetes TTL (Time To Live) controller automatically deletes the Job and its pods after the configured period (default: 3600 seconds / 1 hour).
 
-**Code reference**: `job_creator.go` (line 23) - `TTLSecondsAfterFinished`
+**Code reference**: `TTLSecondsAfterFinished` field in `CreateDiagnosticJob()` in `job_creator.go`
 
 **Cleanup behavior**:
 - Successful jobs: Deleted after TTL expires
@@ -311,7 +340,7 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 | **Go** | 1.21+ (for building from source) |
 | **Container Runtime** | Docker, Podman, or CRI-O |
 | **Shared Storage** | RWX StorageClass (NFS or SDS - Software Defined Storage) |
-| **Spoke/Managed Cluster Credentials** | Kubeconfig secrets in format: `{cluster-name}-admin-kubeconfig` |
+| **Spoke/Managed Cluster Credentials** | Kubeconfig secrets named `{cluster-name}-admin-kubeconfig` in namespace `{cluster-name}` |
 
 **Important**: The operator requires a **ReadWriteMany (RWX)** StorageClass to allow multiple diagnostic jobs to write logs simultaneously. Common options include:
 - **NFS**: `managed-nfs-storage` or custom NFS provisioners
@@ -335,16 +364,16 @@ cd event-driven-diagnostic-operator
 
 2. **Build the container image**:
 ```bash
-# Using Podman
-podman build -t registry/username/diagnostic-operator:v1.0.0 -f Containerfile .
+# Using Podman (recommended for OpenShift environments)
+podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
 
 # Or using Docker
-docker build -t registry/username/diagnostic-operator:v1.0.0 -f Containerfile .
+docker build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
 ```
 
 3. **Push to your container registry**:
 ```bash
-podman push registry/username/diagnostic-operator:v1.0.0
+podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
 ```
 
 ### Deploying with Kubernetes Manifests
@@ -359,9 +388,14 @@ kubectl create namespace diagnostic-operator-system
 kubectl apply -f deploy/rbac.yaml
 ```
 
-This creates:
+This creates all required RBAC resources:
+- `diagnostic-operator-sa`: ServiceAccount for the operator
 - `diagnostic-job-sa`: ServiceAccount for diagnostic jobs
-- RBAC permissions for OpenShift SecurityContextConstraints (SCC)
+- `diagnostic-operator-role`: ClusterRole with permissions for events (`get/list/watch/create/patch`), secrets (`get/list/watch`), and jobs (`create/get/list/watch/delete`)
+- `diagnostic-operator-binding`: ClusterRoleBinding for cluster-wide event access
+- `diagnostic-operator-leader-election`: Role + RoleBinding for leader election leases
+- `diagnostic-operator-secrets`: Role + RoleBinding for creating/deleting copied kubeconfig secrets in the operator namespace
+- `diagnostic-job-nfs-role`: Role + RoleBinding granting SCC `privileged` access for NFS mounting (OpenShift)
 
 3. **Create the PersistentVolumeClaim for log storage**:
 ```bash
@@ -381,56 +415,19 @@ kubectl get storageclass
 
 4. **Deploy the operator**:
 
-Edit `deploy/deployment.yaml` to set your image:
+Edit `deploy/deployment.yaml` to set your image. The default uses the internal OpenShift registry:
 ```yaml
 spec:
   template:
     spec:
       containers:
       - name: manager
-        image: registry/username/diagnostic-operator:v1.0.0  # Update this
+        image: image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4  # Update this
 ```
 
 Then apply:
 ```bash
 kubectl apply -f deploy/deployment.yaml
-```
-
-5. **Add operator RBAC** (if not already in rbac.yaml):
-
-The operator needs permissions to:
-- Watch Events cluster-wide
-- Create Jobs in its namespace
-- Access Secrets (for spoke cluster kubeconfigs)
-
-Create a ServiceAccount for the operator:
-```bash
-kubectl create serviceaccount diagnostic-operator-sa -n diagnostic-operator-system
-```
-
-Create ClusterRole:
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: diagnostic-operator-role
-rules:
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "list"]
-- apiGroups: ["batch"]
-  resources: ["jobs"]
-  verbs: ["create", "get", "list", "watch", "delete"]
-```
-
-Bind it:
-```bash
-kubectl create clusterrolebinding diagnostic-operator-binding \
-  --clusterrole=diagnostic-operator-role \
-  --serviceaccount=diagnostic-operator-system:diagnostic-operator-sa
 ```
 
 ### Verification
@@ -453,7 +450,7 @@ kubectl logs -n diagnostic-operator-system deployment/diagnostic-operator -f
 
 You should see:
 ```
-INFO    setup    Loaded diagnostic rules    {"count": 3}
+INFO    setup    Loaded diagnostic rules    {"count": 2}
 INFO    setup    starting manager
 ```
 
@@ -471,6 +468,8 @@ The operator supports the following command-line flags (defined in `cmd/main.go`
 | `--leader-elect` | `false` | Enable leader election for HA deployments |
 | `--zap-devel` | `true` | Enable development logging (verbose) |
 | `--zap-encoder` | `json` | Log encoding format (`json` or `console`) |
+
+**Note**: The deployment manifest also sets a `LOG_RETENTION_HOURS` environment variable (default `24`). This is reserved for future use and is not currently consumed by the Go code.
 
 **Example**: Enable leader election and production logging:
 ```yaml
@@ -493,9 +492,11 @@ Diagnostic rules are defined in `internal/config/template.go`. Each rule maps an
 
 | Rule Name | Pattern | Must-Gather Image |
 |-----------|---------|-------------------|
-| ETCD Corruption | `(?i)etcd.*database.*corruption` | `registry/openshift/etcd-must-gather:latest` |
-| OVN Network Failure | `(?i)Network.*CNI.*failed` | `registry/openshift/network-must-gather:latest` |
-| Default (fallback) | `.*` (matches all) | `registry.redhat.io/openshift4/ose-must-gather:latest` |
+| ETCD Corruption | `(?i)etcd.*database.*corruption` | `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest` |
+| OVN Network Failure | `(?i)Network.*CNI.*failed` | `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest` |
+| Default (fallback) | N/A | `registry.redhat.io/openshift4/ose-must-gather:latest` |
+
+The Default fallback is a safety net hardcoded in `CreateDiagnosticJob()`. It is used when the `image` parameter is empty, but in practice this path is currently unreachable because the reconciler skips events that match no rule before the job creator is invoked.
 
 **Pattern matching is case-insensitive** (`(?i)` flag) and uses Go's `regexp` package.
 
@@ -540,24 +541,18 @@ func LoadTemplates() []DiagnosticRule {
         {
             Name:    "ETCD Corruption",
             Pattern: regexp.MustCompile(`(?i)etcd.*database.*corruption`),
-            Image:   "registry/openshift/etcd-must-gather:latest",
+            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
         },
         {
             Name:    "OVN Network Failure",
             Pattern: regexp.MustCompile(`(?i)Network.*CNI.*failed`),
-            Image:   "registry/openshift/network-must-gather:latest",
+            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
         },
         // ADD YOUR NEW RULE HERE
         {
             Name:    "Storage Provisioning Failure",
             Pattern: regexp.MustCompile(`(?i)StorageClass.*provision.*failed`),
-            Image:   "registry/openshift/storage-must-gather:latest",
-        },
-        // Fallback default - keep this last
-        {
-            Name:    "Default",
-            Pattern: regexp.MustCompile(`.*`),
-            Image:   "",
+            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
         },
     }
 }
@@ -565,14 +560,14 @@ func LoadTemplates() []DiagnosticRule {
 
 2. **Rebuild** the operator image:
 ```bash
-podman build -t registry/username/diagnostic-operator:v1.0.1 -f Containerfile .
-podman push registry/username/diagnostic-operator:v1.0.1
+podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
+podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5
 ```
 
 3. **Update** the deployment:
 ```bash
 kubectl set image deployment/diagnostic-operator \
-  manager=registry/username/diagnostic-operator:v1.0.1 \
+  manager=image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 \
   -n diagnostic-operator-system
 ```
 
@@ -608,10 +603,11 @@ kubectl apply -f test-etcd-event.yaml
 
 **Expected outcome**:
 1. Operator detects the Warning event
-2. Extracts cluster name: `spoke-prod-1`
-3. Matches pattern: `(?i)etcd.*database.*corruption`
-4. Creates Job using image: `registry/openshift/etcd-must-gather:latest`
-5. Job writes logs to: `/mnt/nfs/logs/spoke-prod-1/`
+2. Matches pattern: `(?i)etcd.*database.*corruption` (image matching runs first)
+3. Extracts cluster name: `spoke-prod-1` (via Strategy A: InvolvedObject kind `ClusterDeployment`)
+4. Copies kubeconfig secret from `spoke-prod-1` namespace to operator namespace
+5. Creates Job `diag-spoke-prod-1-<random>` using the matched must-gather image
+6. Job writes logs to: `/mnt/nfs/logs/spoke-prod-1/`
 
 Verify the job was created:
 ```bash
@@ -637,7 +633,9 @@ involvedObject:
 ```
 
 **Expected outcome**:
-- Creates Job with network-must-gather image
+- Matches pattern `(?i)Network.*CNI.*failed`
+- Extracts cluster name `spoke-dev-2` via Strategy A (InvolvedObject kind `ClusterDeployment`)
+- Creates Job `diag-spoke-dev-2-<random>` with the matched must-gather image
 - Logs written to: `/mnt/nfs/logs/spoke-dev-2/`
 
 ### Example 3: Viewing Collected Logs
@@ -917,18 +915,30 @@ kubectl get events --all-namespaces --field-selector type=Warning
 
 **Common causes**:
 1. **Event type mismatch**: Ensure event has `type: Warning` (case-sensitive)
-2. **Cluster name not parsed**: The `parseClusterName()` function looks for "ClusterDeployment" in the message (line 70-79 in `event_watcher.go`)
-   - Example: `"ClusterDeployment spoke-1 failed"` ✅
-   - Example: `"spoke-1 failed"` ❌ (won't extract cluster name)
-3. **RBAC permissions**: Verify operator has permission to watch Events
+2. **No diagnostic rule matched**: The `determineImage()` function must match the event message against a regex rule before cluster name parsing is attempted. Check that the event message matches one of the patterns in `internal/config/template.go`.
+3. **Cluster name not parsed**: The `parseClusterName()` function uses three strategies in priority order:
+   - **Strategy A**: `InvolvedObject.Kind` is `ClusterDeployment` or `ManagedCluster` → uses `InvolvedObject.Name`
+   - **Strategy B**: Event namespace starts with `spoke-` → uses namespace as cluster name
+   - **Strategy C**: Regex on message text (looks for `ClusterDeployment`, `ManagedCluster`, `cluster`, `on` keywords)
+   - If none match, the event is skipped
+4. **RBAC permissions**: Verify operator has permission to watch Events
 ```bash
 kubectl auth can-i watch events --as=system:serviceaccount:diagnostic-operator-system:diagnostic-operator-sa
 ```
 
 **Fix**:
-Ensure event message format includes "ClusterDeployment" followed by the cluster name:
+Ensure the event either has an appropriate `InvolvedObject` kind, originates from a `spoke-*` namespace, or includes a cluster identifier in the message:
 ```yaml
-message: "ClusterDeployment <cluster-name> <error description>"
+# Option A: Use InvolvedObject (preferred)
+involvedObject:
+  kind: ClusterDeployment  # or ManagedCluster
+  name: spoke-prod-1
+
+# Option B: Use spoke-* namespace
+namespace: spoke-prod-1
+
+# Option C: Include keyword in message
+message: "ClusterDeployment spoke-prod-1 <error description>"
 ```
 
 ### Issue #2: Jobs Fail to Start
@@ -956,16 +966,19 @@ kubectl get serviceaccount diagnostic-job-sa -n diagnostic-operator-system
 ```
 **Fix**: Apply `deploy/rbac.yaml`
 
-2. **Kubeconfig secret not found**: Job expects secret named `{cluster-name}-admin-kubeconfig`
+2. **Kubeconfig secret not found**: The operator reads the source secret `{cluster-name}-admin-kubeconfig` from namespace `{cluster-name}` (the spoke cluster namespace), then copies it to the operator namespace as `diag-kubeconfig-{cluster-name}`
 ```bash
-# Check if secret exists
-kubectl get secret spoke-prod-1-admin-kubeconfig -n diagnostic-operator-system
+# Check if source secret exists in the spoke namespace
+kubectl get secret spoke-prod-1-admin-kubeconfig -n spoke-prod-1
+
+# Check if the copied secret exists in the operator namespace
+kubectl get secret diag-kubeconfig-spoke-prod-1 -n diagnostic-operator-system
 ```
-**Fix**: Create the secret with spoke/managed cluster kubeconfig:
+**Fix**: Create the source secret in the spoke cluster's namespace:
 ```bash
 kubectl create secret generic spoke-prod-1-admin-kubeconfig \
   --from-file=kubeconfig=/path/to/spoke-cluster-kubeconfig \
-  -n diagnostic-operator-system
+  -n spoke-prod-1
 ```
 
 3. **PVC not bound**: Logs PVC must be in `Bound` state
@@ -1043,7 +1056,7 @@ kubectl logs -n diagnostic-operator-system <job-pod-name>
 
 3. **Path mismatch**: Logs written to wrong directory
 - Job writes to: `/mnt/nfs/logs/{cluster-name}/`
-- Verify in job_creator.go line 63: `--dest-dir=/mnt/nfs/logs/` + clusterName
+- Verify in `CreateDiagnosticJob()` in `job_creator.go`: `--dest-dir=/mnt/nfs/logs/` + clusterName
 
 ### Issue #5: Jobs Not Cleaning Up
 
@@ -1066,7 +1079,7 @@ kubectl get pods -n kube-system | grep ttl
 ```bash
 kubectl get job <job-name> -n diagnostic-operator-system -o yaml | grep ttlSecondsAfterFinished
 ```
-**Fix**: This should be automatic (see `job_creator.go` line 23). If missing, check operator version.
+**Fix**: This should be automatic (see `TTLSecondsAfterFinished` in `CreateDiagnosticJob()`). If missing, check operator version.
 
 3. **Job still running**: TTL only applies to completed/failed jobs
 ```bash
@@ -1085,22 +1098,17 @@ kubectl delete jobs -n diagnostic-operator-system --field-selector status.succes
 
 **Cause**: OpenShift Security Context Constraints (SCC) restrict NFS mounts.
 
-**Fix**: Grant SCC permissions in `deploy/rbac.yaml`:
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: diagnostic-scc-role
-rules:
-  - apiGroups: ["security.openshift.io"]
-    resources: ["securitycontextconstraints"]
-    resourceNames: ["privileged"]  # or "hostmount-anyuid"
-    verbs: ["use"]
+**Fix**: The `deploy/rbac.yaml` already includes `diagnostic-job-nfs-role` granting `privileged` SCC access to `diagnostic-job-sa`. Ensure it has been applied:
+```bash
+kubectl apply -f deploy/rbac.yaml
 ```
 
-Then bind to ServiceAccount:
+Alternatively, grant SCC directly via the `oc` CLI:
 ```bash
 oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
+
+# Or use less privileged hostmount-anyuid if sufficient
+oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
 ```
 
 ---
@@ -1112,21 +1120,42 @@ oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-oper
 ```
 event-driven-diagnostic-operator/
 ├── cmd/
-│   └── main.go                       # Entrypoint: Initializes controller-runtime Manager
+│   └── main.go                          # Entrypoint: controller-runtime Manager, query API server
 ├── internal/
 │   ├── config/
-│   │   └── template.go               # Diagnostic rule definitions (regex patterns)
-│   └── controller/
-│       ├── event_watcher.go          # EventReconciler: Watches Events, filters, parses
-│       └── job_creator.go            # Job creation logic with NFS mounts and TTL
+│   │   └── template.go                  # Diagnostic rule definitions (regex → image mappings)
+│   ├── controller/
+│   │   ├── event_watcher.go             # EventReconciler: watches Events, filters, parses, dispatches
+│   │   ├── event_watcher_test.go        # Unit tests for parseClusterName (9 table-driven cases)
+│   │   ├── job_creator.go               # Secret copy + diagnostic Job creation with NFS and TTL
+│   │   └── query_handler.go             # HTTP handlers for /query-events and /query-events-all
+│   └── utils/
+│       └── kubectl.go                   # kubectl-based event query helpers (shells out to kubectl)
 ├── deploy/
-│   ├── rbac.yaml                     # ServiceAccount, Role, RoleBinding for jobs
-│   ├── pvc.yaml                      # PersistentVolumeClaim for log storage
-│   └── deployment.yaml               # Operator Deployment manifest
-├── Containerfile                     # Multi-stage build (Go build → UBI minimal)
-├── go.mod                            # Go module dependencies
-└── README.md                         # This file
+│   ├── rbac.yaml                        # ServiceAccounts, ClusterRole, Roles, Bindings, SCC
+│   ├── pvc.yaml                         # PersistentVolumeClaim for log storage (RWX)
+│   └── deployment.yaml                  # Operator Deployment manifest
+├── examples/
+│   └── ignored-managed-cluster-connection-event.yaml  # Sample ignored RHACM connection event
+├── Containerfile                        # Multi-stage build (Go build → UBI minimal + kubectl)
+├── go.mod                               # Go module dependencies
+└── README.md                            # This file
 ```
+
+### Running Tests
+
+The project includes unit tests for the cluster name parsing logic:
+
+```bash
+go test ./internal/controller/ -v
+```
+
+**Test coverage**: `event_watcher_test.go` contains 9 table-driven test cases for `parseClusterName()` covering:
+- Strategy A: `ClusterDeployment` and `ManagedCluster` InvolvedObject kinds
+- Strategy B: `spoke-*` namespace prefix heuristic
+- Strategy C: Regex extraction from message text (`ClusterDeployment`, `on cluster`, `on` keywords)
+- No-match scenarios (returns empty string)
+- Priority ordering (Strategy A > Strategy B > Strategy C)
 
 ### Running Locally
 
@@ -1189,11 +1218,9 @@ kubectl get events --all-namespaces --field-selector type=Warning
 Pattern: regexp.MustCompile(`(?i)keyword1.*keyword2.*specific-error`),
 ```
 
-3. **Find appropriate must-gather image**: Check available must-gather images:
+3. **Find appropriate must-gather image**: Use your internal registry or Red Hat's public registry:
 - General: `registry.redhat.io/openshift4/ose-must-gather:latest`
-- ETCD: `registry/openshift/etcd-must-gather:latest`
-- Network: `registry/openshift/network-must-gather:latest`
-- Storage: `registry/openshift/storage-must-gather:latest`
+- Internal registry: `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
 - Custom: Build your own must-gather image
 
 4. **Add rule to template.go**:
@@ -1223,9 +1250,9 @@ func TestPatternMatching(t *testing.T) {
 
 6. **Rebuild and deploy**:
 ```bash
-podman build -t registry/username/diagnostic-operator:v1.1.0 -f Containerfile .
-podman push registry/username/diagnostic-operator:v1.1.0
-kubectl set image deployment/diagnostic-operator manager=registry/username/diagnostic-operator:v1.1.0 -n diagnostic-operator-system
+podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
+podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5
+kubectl set image deployment/diagnostic-operator manager=image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -n diagnostic-operator-system
 ```
 
 ### Debugging Tips
@@ -1270,9 +1297,12 @@ The operator uses two ServiceAccounts:
 
 1. **diagnostic-operator-sa** (operator itself):
    - ClusterRole with permissions to:
-     - `watch`, `get`, `list` Events (cluster-wide)
+     - `get`, `list`, `watch`, `create`, `patch` Events (cluster-wide)
      - `create`, `get`, `list`, `watch`, `delete` Jobs (namespaced)
-     - `get`, `list` Secrets (for spoke/managed cluster kubeconfigs)
+     - `get`, `list`, `watch` Secrets (cluster-wide, for reading spoke kubeconfigs)
+   - Namespace-scoped Roles for:
+     - Leader election: `get`, `list`, `watch`, `create`, `update`, `patch`, `delete` Leases
+     - Secret management: `create`, `get`, `delete` Secrets (for kubeconfig copies in operator namespace)
 
 2. **diagnostic-job-sa** (diagnostic jobs):
    - Role with permissions to:
@@ -1282,22 +1312,23 @@ The operator uses two ServiceAccounts:
 
 ### Spoke/Managed Cluster Credentials
 
-Spoke/managed cluster kubeconfigs are stored as Secrets in the Hub Cluster. Best practices:
+Spoke/managed cluster kubeconfigs are stored as Secrets in the Hub Cluster. The operator reads them from the spoke cluster's own namespace (e.g., `spoke-prod-1`) and copies them to the operator namespace for Job pod mounting. Best practices:
 
-1. **Namespace isolation**: Store secrets in `diagnostic-operator-system` namespace
-2. **Access control**: Only operator ServiceAccount can read these secrets
+1. **Namespace isolation**: Source secrets live in spoke cluster namespaces; copies are created in `diagnostic-operator-system` with labels for tracking
+2. **Access control**: Only the operator ServiceAccount can read spoke kubeconfig secrets and create copies
 3. **Rotation**: Regularly rotate spoke/managed cluster credentials
 4. **Audit**: Enable audit logging for Secret access
 
 ```bash
-# Create spoke/managed cluster kubeconfig secret
+# Create spoke/managed cluster kubeconfig secret in the spoke namespace
 kubectl create secret generic spoke-prod-1-admin-kubeconfig \
   --from-file=kubeconfig=/path/to/spoke-kubeconfig \
-  -n diagnostic-operator-system
+  -n spoke-prod-1
 
 # Verify secret is not readable by default ServiceAccount
 kubectl auth can-i get secret spoke-prod-1-admin-kubeconfig \
-  --as=system:serviceaccount:diagnostic-operator-system:default
+  --as=system:serviceaccount:diagnostic-operator-system:default \
+  -n spoke-prod-1
 # Should return "no"
 ```
 
@@ -1382,7 +1413,7 @@ oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnosti
 
 ```bash
 # Scan image with Trivy
-trivy image registry/username/diagnostic-operator:v1.0.0
+trivy image image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
 ```
 
 ---
