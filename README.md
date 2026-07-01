@@ -1,9 +1,8 @@
-# OpenShift Event-Driven Diagnostic Operator
+# Kubernetes Event-Driven Diagnostic Operator
 
-> An intelligent, automated diagnostic operator that monitors OpenShift Hub Cluster events, detects spoke cluster failures, and automatically launches targeted must-gather diagnostics with log persistence for root cause analysis.
+> An intelligent, automated diagnostic operator that monitors Kubernetes Hub Cluster events, detects spoke cluster failures, and automatically launches targeted must-gather diagnostics with log persistence for root cause analysis.
 
 ![Kubernetes](https://img.shields.io/badge/kubernetes-v1.28+-blue.svg)
-![OpenShift](https://img.shields.io/badge/openshift-4.x%20%7C%205.x-red.svg)
 ![Go](https://img.shields.io/badge/go-1.21+-00ADD8.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 
@@ -45,10 +44,10 @@
 
 ## Overview
 
-The **OpenShift Event-Driven Diagnostic Operator** automates the detection and diagnosis of spoke/managed cluster failures in multi-cluster OpenShift environments. Instead of manual intervention when clusters fail, this operator:
+The **Kubernetes Event-Driven Diagnostic Operator** automates the detection and diagnosis of spoke/managed cluster failures in multi-cluster Kubernetes environments. Instead of manual intervention when clusters fail, this operator:
 
 1. **Loads** pre-defined diagnostic templates mapping error patterns to must-gather images
-2. **Monitors** Hub Cluster (OpenShift with RHACM) events using hub kubeconfig for `Type=Warning` events
+2. **Monitors** Hub Cluster events using hub kubeconfig for `Type=Warning` events
 3. **Matches** event messages against regex patterns to select the appropriate must-gather image (events that match no rule are silently skipped)
 4. **Parses** event metadata and message to extract spoke/managed cluster name using a multi-strategy parser
 5. **Copies** spoke/managed cluster kubeconfig from the spoke namespace into the operator namespace
@@ -61,9 +60,9 @@ This approach ensures **non-blocking operation**, **targeted diagnostics**, and 
 
 ### Terminology
 
-- **Hub Cluster**: The central OpenShift cluster running RHACM (Red Hat Advanced Cluster Management) where this diagnostic operator is deployed. The Hub monitors and manages multiple spoke/managed clusters and receives their events.
+- **Hub Cluster**: The central Kubernetes cluster running a multi-cluster management solution (e.g., RHACM) where this diagnostic operator is deployed. The Hub monitors and manages multiple spoke/managed clusters and receives their events.
 
-- **Spoke/Managed Cluster**: Target OpenShift clusters being monitored by the Hub. These are the clusters that may experience failures and require diagnostic data collection. Also referred to as "managed clusters" in RHACM terminology.
+- **Spoke/Managed Cluster**: Target Kubernetes clusters being monitored by the Hub. These are the clusters that may experience failures and require diagnostic data collection. Also referred to as "managed clusters" in RHACM terminology.
 
 ---
 
@@ -174,13 +173,13 @@ The operator loads diagnostic rules from `internal/config/template.go` at startu
 **Code reference**: `LoadTemplates()` function in `config/template.go`
 
 **Current rules**:
-- ETCD corruption pattern → `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
-- Network CNI failure pattern → `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
-- Default fallback (safety net in `CreateDiagnosticJob()`) → `registry.redhat.io/openshift4/ose-must-gather:latest`
+- ETCD corruption pattern → `<your-registry>/diagnostic-operator-system/ose-must-gather:latest`
+- Network CNI failure pattern → `<your-registry>/diagnostic-operator-system/ose-must-gather:latest`
+- Default fallback (safety net in `CreateDiagnosticJob()`) → `<your-registry>/diagnostic-operator-system/must-gather:latest`
 
 #### Step 2: Export Hub Cluster's KUBECONFIG
 
-The operator runs within the Hub Cluster (OpenShift with RHACM - Red Hat Advanced Cluster Management) and uses the in-cluster service account credentials to access the Kubernetes Event API.
+The operator runs within the Hub Cluster and uses the in-cluster service account credentials to access the Kubernetes Event API.
 
 **Configuration**: In-cluster service account with permissions to watch Events cluster-wide
 
@@ -268,12 +267,12 @@ The operator retrieves the spoke cluster's kubeconfig from a Kubernetes Secret a
 - Namespace: `diagnostic-operator-system`
 - Labels: `app.kubernetes.io/managed-by: diagnostic-operator`, `diagnostic-operator/cluster: {cluster-name}`
 
-#### Step 7: Run must-gather with Specific Image or Without
+#### Step 7: Run Diagnostic Collection with Specific Image or Without
 
 A Kubernetes Job is created that:
 - Uses the image determined in Step 4
 - Mounts the spoke cluster kubeconfig from Step 6
-- Runs `oc adm must-gather` command against the spoke cluster
+- Runs the diagnostic collection command against the spoke cluster
 - Operates independently without blocking the operator
 - Has TTL set for automatic cleanup
 
@@ -284,15 +283,15 @@ A Kubernetes Job is created that:
 - Container name: `must-gather-executor`
 - ServiceAccount: `diagnostic-job-sa`
 - RestartPolicy: `OnFailure`
-- Command: `["/usr/bin/oc"]`
-- Args: `["adm", "must-gather", "--dest-dir=/mnt/nfs/logs/{cluster-name}"]`
+- Command: `["/usr/bin/diagnostic-collector"]` (configurable diagnostic binary)
+- Args: `["collect", "--dest-dir=/mnt/nfs/logs/{cluster-name}"]`
 - Environment: `KUBECONFIG=/etc/secret/kubeconfig`
 
 #### Step 8: Store System Logs to External NFS or SDS Nodes
 
 The Job pod mounts a ReadWriteMany (RWX) PersistentVolumeClaim backed by either:
 - **NFS** (Network File System) - Traditional shared storage
-- **SDS** (Software Defined Storage) - Ceph, Portworx, OpenEBS, OpenShift Data Foundation
+- **SDS** (Software Defined Storage) - Ceph, Portworx, OpenEBS, OpenShift Data Foundation (OpenShift-specific)
 
 Logs are written to `/mnt/nfs/logs/{cluster-name}/` ensuring persistence beyond pod lifetime and accessibility for offline root cause analysis.
 
@@ -336,7 +335,6 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 | Requirement | Version/Details |
 |------------|-----------------|
 | **Kubernetes** | v1.28+ (based on API compatibility) |
-| **OpenShift** | v4.x or v5.x |
 | **Go** | 1.21+ (for building from source) |
 | **Container Runtime** | Docker, Podman, or CRI-O |
 | **Shared Storage** | RWX StorageClass (NFS or SDS - Software Defined Storage) |
@@ -345,7 +343,7 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 **Important**: The operator requires a **ReadWriteMany (RWX)** StorageClass to allow multiple diagnostic jobs to write logs simultaneously. Common options include:
 - **NFS**: `managed-nfs-storage` or custom NFS provisioners
 - **SDS (Software Defined Storage)**: 
-  - `ocs-storagecluster-cephfs` (OpenShift Data Foundation / Ceph)
+  - `ocs-storagecluster-cephfs` (OpenShift Data Foundation / Ceph, OpenShift-specific)
   - Portworx shared volumes
   - OpenEBS NFS provisioner
   - Other distributed storage systems
@@ -364,16 +362,16 @@ cd event-driven-diagnostic-operator
 
 2. **Build the container image**:
 ```bash
-# Using Podman (recommended for OpenShift environments)
-podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
+# Using Podman (recommended for container builds)
+podman build -t <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
 
 # Or using Docker
-docker build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
+docker build -t <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.4 -f Containerfile .
 ```
 
 3. **Push to your container registry**:
 ```bash
-podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
+podman push <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.4
 ```
 
 ### Deploying with Kubernetes Manifests
@@ -395,7 +393,7 @@ This creates all required RBAC resources:
 - `diagnostic-operator-binding`: ClusterRoleBinding for cluster-wide event access
 - `diagnostic-operator-leader-election`: Role + RoleBinding for leader election leases
 - `diagnostic-operator-secrets`: Role + RoleBinding for creating/deleting copied kubeconfig secrets in the operator namespace
-- `diagnostic-job-nfs-role`: Role + RoleBinding granting SCC `privileged` access for NFS mounting (OpenShift)
+- `diagnostic-job-nfs-role`: Role + RoleBinding granting SCC `privileged` access for NFS mounting (OpenShift-specific)
 
 3. **Create the PersistentVolumeClaim for log storage**:
 ```bash
@@ -415,14 +413,14 @@ kubectl get storageclass
 
 4. **Deploy the operator**:
 
-Edit `deploy/deployment.yaml` to set your image. The default uses the internal OpenShift registry:
+Edit `deploy/deployment.yaml` to set your image. The default uses your container registry:
 ```yaml
 spec:
   template:
     spec:
       containers:
       - name: manager
-        image: image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4  # Update this
+        image: <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.4  # Update this
 ```
 
 Then apply:
@@ -492,9 +490,9 @@ Diagnostic rules are defined in `internal/config/template.go`. Each rule maps an
 
 | Rule Name | Pattern | Must-Gather Image |
 |-----------|---------|-------------------|
-| ETCD Corruption | `(?i)etcd.*database.*corruption` | `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest` |
-| OVN Network Failure | `(?i)Network.*CNI.*failed` | `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest` |
-| Default (fallback) | N/A | `registry.redhat.io/openshift4/ose-must-gather:latest` |
+| ETCD Corruption | `(?i)etcd.*database.*corruption` | `<your-registry>/diagnostic-operator-system/ose-must-gather:latest` |
+| OVN Network Failure | `(?i)Network.*CNI.*failed` | `<your-registry>/diagnostic-operator-system/ose-must-gather:latest` |
+| Default (fallback) | N/A | `<your-registry>/diagnostic-operator-system/must-gather:latest` |
 
 The Default fallback is a safety net hardcoded in `CreateDiagnosticJob()`. It is used when the `image` parameter is empty, but in practice this path is currently unreachable because the reconciler skips events that match no rule before the job creator is invoked.
 
@@ -541,18 +539,18 @@ func LoadTemplates() []DiagnosticRule {
         {
             Name:    "ETCD Corruption",
             Pattern: regexp.MustCompile(`(?i)etcd.*database.*corruption`),
-            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
+            Image:   "<your-registry>/diagnostic-operator-system/ose-must-gather:latest",
         },
         {
             Name:    "OVN Network Failure",
             Pattern: regexp.MustCompile(`(?i)Network.*CNI.*failed`),
-            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
+            Image:   "<your-registry>/diagnostic-operator-system/ose-must-gather:latest",
         },
         // ADD YOUR NEW RULE HERE
         {
             Name:    "Storage Provisioning Failure",
             Pattern: regexp.MustCompile(`(?i)StorageClass.*provision.*failed`),
-            Image:   "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest",
+            Image:   "<your-registry>/diagnostic-operator-system/ose-must-gather:latest",
         },
     }
 }
@@ -560,14 +558,14 @@ func LoadTemplates() []DiagnosticRule {
 
 2. **Rebuild** the operator image:
 ```bash
-podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
-podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5
+podman build -t <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
+podman push <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5
 ```
 
 3. **Update** the deployment:
 ```bash
 kubectl set image deployment/diagnostic-operator \
-  manager=image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 \
+  manager=<your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5 \
   -n diagnostic-operator-system
 ```
 
@@ -1019,7 +1017,7 @@ kubectl get storageclass -o custom-columns=NAME:.metadata.name,MODES:.allowedTop
 ```
 **Fix**: Install NFS provisioner or SDS solution:
 - NFS: Deploy NFS provisioner or use external NFS server
-- SDS: Install Ceph (OpenShift Data Foundation), Portworx, or OpenEBS
+- SDS: Install Ceph (OpenShift Data Foundation, OpenShift-specific), Portworx, or OpenEBS
 - Cloud: Use cloud provider's shared file storage (EFS, Azure Files, etc.)
 
 3. **Insufficient storage**: Not enough capacity in storage backend
@@ -1092,23 +1090,25 @@ kubectl describe job <job-name> -n diagnostic-operator-system
 kubectl delete jobs -n diagnostic-operator-system --field-selector status.successful=1
 ```
 
-### Issue #6: Permission Denied on NFS Mount (OpenShift)
+### Issue #6: Permission Denied on NFS Mount
+
+> **Note**: This issue is specific to OpenShift deployments using Security Context Constraints (SCC).
 
 **Symptoms**: Pods fail with "Permission denied" when writing to NFS.
 
-**Cause**: OpenShift Security Context Constraints (SCC) restrict NFS mounts.
+**Cause**: Security Context Constraints (SCC) restrict NFS mounts.
 
 **Fix**: The `deploy/rbac.yaml` already includes `diagnostic-job-nfs-role` granting `privileged` SCC access to `diagnostic-job-sa`. Ensure it has been applied:
 ```bash
 kubectl apply -f deploy/rbac.yaml
 ```
 
-Alternatively, grant SCC directly via the `oc` CLI:
+Alternatively, grant SCC directly via the `kubectl` CLI:
 ```bash
-oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
+kubectl adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
 
 # Or use less privileged hostmount-anyuid if sufficient
-oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
+kubectl adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
 ```
 
 ---
@@ -1219,8 +1219,8 @@ Pattern: regexp.MustCompile(`(?i)keyword1.*keyword2.*specific-error`),
 ```
 
 3. **Find appropriate must-gather image**: Use your internal registry or Red Hat's public registry:
-- General: `registry.redhat.io/openshift4/ose-must-gather:latest`
-- Internal registry: `image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest`
+- General: `<your-registry>/diagnostic-operator-system/must-gather:latest`
+- Internal registry: `<your-registry>/diagnostic-operator-system/ose-must-gather:latest`
 - Custom: Build your own must-gather image
 
 4. **Add rule to template.go**:
@@ -1250,9 +1250,9 @@ func TestPatternMatching(t *testing.T) {
 
 6. **Rebuild and deploy**:
 ```bash
-podman build -t image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
-podman push image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5
-kubectl set image deployment/diagnostic-operator manager=image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5 -n diagnostic-operator-system
+podman build -t <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5 -f Containerfile .
+podman push <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5
+kubectl set image deployment/diagnostic-operator manager=<your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.5 -n diagnostic-operator-system
 ```
 
 ### Debugging Tips
@@ -1388,16 +1388,18 @@ kubectl label namespace diagnostic-operator-system \
   pod-security.kubernetes.io/warn=restricted
 ```
 
-### OpenShift Security Context Constraints (SCC)
+### Security Context Constraints (SCC)
+
+> **Note**: This section applies to OpenShift deployments only. For vanilla Kubernetes, use Pod Security Standards (PSS) instead.
 
 For OpenShift deployments, diagnostic jobs may need elevated SCC for NFS mounts:
 
 ```bash
 # Grant privileged SCC to job ServiceAccount
-oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
+kubectl adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
 
 # Or use less privileged hostmount-anyuid if sufficient
-oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
+kubectl adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
 ```
 
 **Security trade-off**: NFS mounting typically requires elevated permissions. Consider:
@@ -1413,14 +1415,14 @@ oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnosti
 
 ```bash
 # Scan image with Trivy
-trivy image image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
+trivy image <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.4
 ```
 
 ---
 
 ## Contributing
 
-We welcome contributions to improve the OpenShift Event-Driven Diagnostic Operator!
+We welcome contributions to improve the Kubernetes Event-Driven Diagnostic Operator!
 
 ### How to Contribute
 
@@ -1459,7 +1461,7 @@ We welcome contributions to improve the OpenShift Event-Driven Diagnostic Operat
 When reporting issues, please include:
 
 1. **Operator version**: Image tag or git commit
-2. **Kubernetes/OpenShift version**: `kubectl version`
+2. **Kubernetes version**: `kubectl version`
 3. **Symptom description**: What's not working?
 4. **Steps to reproduce**: How to trigger the issue
 5. **Logs**: Operator logs and job pod logs
@@ -1495,7 +1497,7 @@ This project is licensed under the **Apache License 2.0**.
 See the [LICENSE](LICENSE) file for full license text.
 
 ```
-Copyright 2024-2026 OpenShift Diagnostic Operator Contributors
+Copyright 2024-2026 Kubernetes Diagnostic Operator Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
