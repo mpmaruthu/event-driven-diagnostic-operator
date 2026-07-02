@@ -643,29 +643,26 @@ Access the NFS storage to view diagnostic logs:
 **Option 1**: From within the cluster:
 ```bash
 # Create a debug pod with NFS mount
-kubectl run -it --rm nfs-viewer \
-  --image=busybox \
-  --overrides='
-  {
-    "spec": {
-      "containers": [{
-        "name": "nfs-viewer",
-        "image": "busybox",
-        "command": ["sh"],
-        "volumeMounts": [{
-          "name": "logs",
-          "mountPath": "/logs"
-        }]
-      }],
-      "volumes": [{
+kubectl run nfs-viewer -n diagnostic-operator-system --image=busybox --restart=Always --overrides='
+{
+  "spec": {
+    "containers": [{
+      "name": "nfs-viewer",
+      "image": "busybox",
+      "command": ["sh", "-c", "sleep infinity"],
+      "volumeMounts": [{
         "name": "logs",
-        "persistentVolumeClaim": {
-          "claimName": "logs-pvc"
-        }
+        "mountPath": "/logs"
       }]
-    }
-  }' \
-  -n diagnostic-operator-system
+    }],
+    "volumes": [{
+      "name": "logs",
+      "persistentVolumeClaim": {
+        "claimName": "logs-pvc"
+      }
+    }]
+  }
+}'
 
 # Inside the pod
 ls /logs/
