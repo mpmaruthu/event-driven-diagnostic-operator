@@ -20,7 +20,7 @@ spec:
         runAsNonRoot: true
       containers:
       - name: manager
-        image: image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.4
+        image: image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/diagnostic-operator:v2.0.5
         imagePullPolicy: Always
         command:
         - /manager
@@ -47,3 +47,5 @@ spec:
           value: "24"
         - name: KUBECONFIG
           value: ""  # Empty string uses in-cluster service account
+        - name: MUST_GATHER_IMAGE
+          value: "image-registry.openshift-image-registry.svc:5000/diagnostic-operator-system/ose-must-gather:latest"
