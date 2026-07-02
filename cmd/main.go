@@ -57,8 +57,9 @@ func main() {
 	}
 
 	// Load diagnostic rules/templates
-	rules := config.LoadTemplates()
-	setupLog.Info("Loaded diagnostic rules", "count", len(rules))
+	mustGatherImage := os.Getenv("MUST_GATHER_IMAGE")
+	rules := config.LoadTemplates(mustGatherImage)
+	setupLog.Info("Loaded diagnostic rules", "count", len(rules), "mustGatherImage", mustGatherImage)
 
 	// Setup the EventReconciler
 	if err = (&controller.EventReconciler{
