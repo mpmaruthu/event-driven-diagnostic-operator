@@ -1,8 +1,9 @@
-# Kubernetes Event-Driven Diagnostic Operator
+# Event-Driven Diagnostic Operator for Red Hat OpenShift / Kubernetes
 
-> An intelligent, automated diagnostic operator that monitors Kubernetes Hub Cluster events, detects spoke cluster failures, and automatically launches targeted must-gather diagnostics with log persistence for root cause analysis.
+> An intelligent, automated diagnostic operator that monitors Red Hat OpenShift / Kubernetes Hub Cluster events, detects spoke cluster failures, and automatically launches targeted must-gather diagnostics with log persistence for root cause analysis.
 
 ![Kubernetes](https://img.shields.io/badge/kubernetes-v1.28+-blue.svg)
+![OpenShift](https://img.shields.io/badge/openshift-4.x%20%7C%205.x-red.svg)
 ![Go](https://img.shields.io/badge/go-1.21+-00ADD8.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 
@@ -11,6 +12,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+  - [Custom Resources](#custom-resources)
 - [Architecture](#architecture)
   - [Event-Driven Workflow](#event-driven-workflow)
   - [Component Architecture](#component-architecture)
@@ -44,7 +46,7 @@
 
 ## Overview
 
-The **Kubernetes Event-Driven Diagnostic Operator** automates the detection and diagnosis of spoke/managed cluster failures in multi-cluster Kubernetes environments. Instead of manual intervention when clusters fail, this operator:
+The **Event-Driven Diagnostic Operator** automates the detection and diagnosis of spoke/managed cluster failures in multi-cluster Red Hat OpenShift / Kubernetes environments. Instead of manual intervention when clusters fail, this operator:
 
 1. **Loads** pre-defined diagnostic templates mapping error patterns to must-gather images
 2. **Monitors** Hub Cluster events using hub kubeconfig for `Type=Warning` events
@@ -60,9 +62,38 @@ This approach ensures **non-blocking operation**, **targeted diagnostics**, and 
 
 ### Terminology
 
-- **Hub Cluster**: The central Kubernetes cluster running a multi-cluster management solution (e.g., RHACM) where this diagnostic operator is deployed. The Hub monitors and manages multiple spoke/managed clusters and receives their events.
+- **Hub Cluster**: The central Red Hat OpenShift / Kubernetes cluster running a multi-cluster management solution (e.g., RHACM / Open Cluster Management) where this diagnostic operator is deployed. The Hub monitors and manages multiple spoke/managed clusters and receives their events.
 
-- **Spoke/Managed Cluster**: Target Kubernetes clusters being monitored by the Hub. These are the clusters that may experience failures and require diagnostic data collection. Also referred to as "managed clusters" in RHACM terminology.
+- **Spoke/Managed Cluster**: Target Red Hat OpenShift / Kubernetes clusters being monitored by the Hub. These are the clusters that may experience failures and require diagnostic data collection. Also referred to as "managed clusters" in RHACM terminology.
+
+### Custom Resources
+
+The operator does **not** define its own CRDs. It watches core Kubernetes `Event` objects whose `involvedObject` may reference the following custom resources from RHACM, Hive, and related components.
+
+**Handled by Strategy A** (cluster name extracted directly from `InvolvedObject.Name`):
+
+| Kind | API Group / Version | Source |
+|------|---------------------|--------|
+| `ManagedCluster` | `cluster.open-cluster-management.io/v1` | RHACM / Open Cluster Management |
+| `ClusterDeployment` | `hive.openshift.io/v1` | Hive (ACM cluster provisioning) |
+
+**May appear on Hub Warning events** (cluster name falls through to namespace heuristic or message regex):
+
+| Kind | API Group / Version | Source |
+|------|---------------------|--------|
+| `ManagedClusterInfo` | `internal.open-cluster-management.io/v1beta1` | RHACM |
+| `KlusterletAddonConfig` | `agent.open-cluster-management.io/v1` | RHACM |
+| `ManagedClusterSet` | `cluster.open-cluster-management.io/v1beta2` | RHACM |
+| `ManagedClusterSetBinding` | `cluster.open-cluster-management.io/v1beta2` | RHACM |
+| `ClusterProvision` | `hive.openshift.io/v1` | Hive |
+| `MachinePool` | `hive.openshift.io/v1` | Hive |
+| `SyncSet` | `hive.openshift.io/v1` | Hive |
+| `ClusterClaim` | `hive.openshift.io/v1` | Hive |
+| `ClusterDeprovision` | `hive.openshift.io/v1` | Hive |
+| `AgentClusterInstall` | `extensions.hive.openshift.io/v1beta1` | Assisted Installer / CIM |
+| `InfraEnv` | `agent-install.openshift.io/v1beta1` | Assisted Installer / CIM |
+
+Adding Strategy A support for additional kinds is a potential future enhancement. The existing roadmap item for CRD-based dynamic rule configuration could also cover this.
 
 ---
 
@@ -335,6 +366,7 @@ After the diagnostic Job completes (successfully or with failure), the Kubernete
 | Requirement | Version/Details |
 |------------|-----------------|
 | **Kubernetes** | v1.28+ (based on API compatibility) |
+| **Red Hat OpenShift** | v4.x or v5.x |
 | **Go** | 1.21+ (for building from source) |
 | **Container Runtime** | Docker, Podman, or CRI-O |
 | **Shared Storage** | RWX StorageClass (NFS or SDS - Software Defined Storage) |
@@ -375,6 +407,8 @@ podman push <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.
 ```
 
 ### Deploying with Kubernetes Manifests
+
+The same manifests apply to both Red Hat OpenShift and vanilla Kubernetes clusters.
 
 1. **Create the namespace**:
 ```bash
@@ -519,6 +553,7 @@ type: Warning
 reason: AvailableUnknown
 message: "ManagedCluster target-spoke-cluster is successfully imported. However, the connection check from the managed cluster to the hub cluster has failed"
 involvedObject:
+  apiVersion: cluster.open-cluster-management.io/v1
   kind: ManagedCluster
   name: target-spoke-cluster
 ```
@@ -590,6 +625,7 @@ type: Warning
 reason: ETCDCorruption
 message: "ClusterDeployment spoke-prod-1 etcd database corruption detected"
 involvedObject:
+  apiVersion: hive.openshift.io/v1
   kind: ClusterDeployment
   name: spoke-prod-1
 ```
@@ -626,6 +662,7 @@ type: Warning
 reason: NetworkFailure
 message: "ClusterDeployment spoke-dev-2 Network CNI plugin failed to initialize"
 involvedObject:
+  apiVersion: hive.openshift.io/v1
   kind: ClusterDeployment
   name: spoke-dev-2
 ```
@@ -867,7 +904,7 @@ LAST SEEN   TYPE      REASON             OBJECT                      MESSAGE
 - **LAST SEEN**: How long ago the event was last observed
 - **TYPE**: Event severity (Warning, Normal, Error)
 - **REASON**: Short machine-readable reason code
-- **OBJECT**: Kubernetes object that triggered the event
+- **OBJECT**: Kubernetes object or custom resource (e.g., ManagedCluster, ClusterDeployment) that triggered the event
 - **MESSAGE**: Human-readable description
 
 #### Query API Response Format
@@ -926,6 +963,7 @@ Ensure the event either has an appropriate `InvolvedObject` kind, originates fro
 ```yaml
 # Option A: Use InvolvedObject (preferred)
 involvedObject:
+  apiVersion: hive.openshift.io/v1  # or cluster.open-cluster-management.io/v1 for ManagedCluster
   kind: ClusterDeployment  # or ManagedCluster
   name: spoke-prod-1
 
@@ -1064,7 +1102,7 @@ kubectl get jobs -n diagnostic-operator-system
 ```
 
 **Common causes**:
-1. **TTL controller disabled**: Kubernetes cluster must have TTL controller enabled
+1. **TTL controller disabled**: Red Hat OpenShift / Kubernetes cluster must have TTL controller enabled
 ```bash
 kubectl get pods -n kube-system | grep ttl
 ```
@@ -1100,12 +1138,12 @@ kubectl delete jobs -n diagnostic-operator-system --field-selector status.succes
 kubectl apply -f deploy/rbac.yaml
 ```
 
-Alternatively, grant SCC directly via the `kubectl` CLI:
+Alternatively, grant SCC directly via the `oc` CLI (OpenShift only):
 ```bash
-kubectl adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
+oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
 
 # Or use less privileged hostmount-anyuid if sufficient
-kubectl adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
+oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
 ```
 
 ---
@@ -1192,6 +1230,7 @@ type: Warning
 reason: ETCDCorruption
 message: "ClusterDeployment test-cluster-1 etcd database corruption detected"
 involvedObject:
+  apiVersion: hive.openshift.io/v1
   kind: ClusterDeployment
   name: test-cluster-1
 EOF
@@ -1392,11 +1431,11 @@ kubectl label namespace diagnostic-operator-system \
 For OpenShift deployments, diagnostic jobs may need elevated SCC for NFS mounts:
 
 ```bash
-# Grant privileged SCC to job ServiceAccount
-kubectl adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
+# Grant privileged SCC to job ServiceAccount (OpenShift only)
+oc adm policy add-scc-to-user privileged -z diagnostic-job-sa -n diagnostic-operator-system
 
 # Or use less privileged hostmount-anyuid if sufficient
-kubectl adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
+oc adm policy add-scc-to-user hostmount-anyuid -z diagnostic-job-sa -n diagnostic-operator-system
 ```
 
 **Security trade-off**: NFS mounting typically requires elevated permissions. Consider:
@@ -1419,7 +1458,7 @@ trivy image <your-registry>/diagnostic-operator-system/diagnostic-operator:v2.0.
 
 ## Contributing
 
-We welcome contributions to improve the Kubernetes Event-Driven Diagnostic Operator!
+We welcome contributions to improve the Event-Driven Diagnostic Operator for Red Hat OpenShift / Kubernetes!
 
 ### How to Contribute
 
@@ -1459,13 +1498,14 @@ When reporting issues, please include:
 
 1. **Operator version**: Image tag or git commit
 2. **Kubernetes version**: `kubectl version`
-3. **Symptom description**: What's not working?
-4. **Steps to reproduce**: How to trigger the issue
-5. **Logs**: Operator logs and job pod logs
+3. **OpenShift version** (if applicable): `oc version`
+4. **Symptom description**: What's not working?
+5. **Steps to reproduce**: How to trigger the issue
+6. **Logs**: Operator logs and job pod logs
    ```bash
    kubectl logs -n diagnostic-operator-system deployment/diagnostic-operator
    ```
-6. **Event details**: The Warning event that triggered the issue
+7. **Event details**: The Warning event that triggered the issue
    ```bash
    kubectl get event <event-name> -o yaml
    ```
